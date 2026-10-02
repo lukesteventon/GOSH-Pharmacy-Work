@@ -1,0 +1,184 @@
+---
+title: "Formulary - BNF linkage"
+author: "Luke Steventon"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(broom)
+library(ggplot2)
+library(skimr)
+library(survminer)
+library(survival)
+library(rbin)
+library(readr)
+library(here)
+library(fuzzyjoin)
+knitr::opts_chunk$set(echo = TRUE)
+here()
+#setwd("K:\\QNAP\\BRCT\\SACT project\\LSanalysis\\Rstudio")
+setwd("H:\\DTC Project (Local)")
+getwd()
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#Read pharmacy files
+formulary_list<-read_csv(
+  "formulary_list.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+#Read BNF code dataset
+ingredients<-read_csv(
+  "f_ingredient.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+vtm<-read_csv(
+  "f_vtm.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+snomed_mapping_file<-read_csv(
+"snomed_mapping_data_20260921.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+bnf_codes<-read_csv(
+"bnf_code_current_202608_version_90.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+```
+
+Link SNOMED and dm+d together
+```{r}
+snomed_mapping_file |> 
+  count(VTM) #n=3103 VTMs
+
+vtm |> 
+  count(VTMID)
+
+snomed_dmd<-snomed_mapping_file |>  #n=406,290 lines in snomed
+  rename(VTMID=VTM) |> #merge on VTM
+merge(vtm, by="VTMID") #n=3253 lines in the vtm dm+d file
+
+snomed_mapping_file |> 
+  filter(`VTM Name`=="Acebutolol")
+
+vtm |> 
+  filter(NM=="Acebutolol")
+
+snomed_dmd |> 
+  filter(NM=="Acebutolol")
+
+snomed_dmd |> 
+  distinct(VTMID,.keep_all=T) #n=3,102 preserved
+```
+SNOMED and dm+d linked data contains drug name, VTM code and BNF code.
+```{r}
+snomed_dmd_bnflink<-snomed_dmd |> 
+  rename(BNF_PRESENTATION_CODE=`BNF Code`) |> 
+  merge(bnf_codes, by = "BNF_PRESENTATION_CODE") #|> 
+  #select(VTMID, `VTM Name`,`BNF Name`, BNF_SECTION, BNF_PARAGRAPH)
+```
+Save SNOMED/BNF/DMD linked data
+```{r}
+write_csv(snomed_dmd_bnflink, "snomed_bnf_dmd_link.csv")
+```
+
+
+Join GOSH formulary to dm+d/BNF/SNOMED linked data
+```{r}
+dataset<-snomed_dmd_bnflink |> 
+  distinct(`VTM Name`, BNF_CHAPTER,BNF_SECTION,.keep_all=T) |> 
+  select(`VTM Name`,BNF_PRODUCT,BNF_CHAPTER, BNF_SECTION,BNF_PARAGRAPH, BNF_SUBPARAGRAPH) |> 
+  arrange(`VTM Name`) |> 
+  mutate(`Drug...2`=`VTM Name`) |> 
+  #mutate(`Drug...2`=`BNF_SUBPARAGRAPH`)|> 
+  mutate(`Pharmaceutical class`=`BNF_SECTION`) |> 
+  right_join(formulary_list, by= c("Drug...2","Pharmaceutical class")) |>   #firstly link on drug and pharmaceutical class for drugs where there is more than one indication
+  select(`VTM Name`, Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
+
+datasetlink1<-dataset|> 
+  filter(!is.na(BNF_SECTION)) |> 
+  mutate(dataset="one")
+
+datasetlink1 |> 
+  filter(!is.na(BNF_SECTION)) #n=349/1181 match on drug and BNF_SECTION
+
+snomed_filtered<-snomed_dmd_bnflink |> 
+    distinct(`VTM Name`,.keep_all=T)
+
+
+#Then link on drug only???
+datasetlink2<-dataset |> 
+  filter(is.na(BNF_SECTION)) |> 
+  mutate(`BNF_PRODUCT`=Drug...2) |> 
+  select(`BNF_PRODUCT`, Drug...2, `Pharmaceutical class`, `Therapeutic class`) |> 
+  left_join(snomed_filtered, by = "BNF_PRODUCT") |> 
+  select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH) |> 
+  filter(!is.na(BNF_SECTION)) |> 
+  mutate(dataset="two")
+
+snomed_filtered |> 
+  filter(str_detect(`DM+D: Product Description`,"5-Hydroxytryptophan"))
+```
+
+Bind successfully merged data
+```{r}
+linked_data_complete<-rbind(datasetlink1, datasetlink2) #n=574/1181 linked with full info
+```
+
+Investigate those that haven't linked
+```{r}
+nolinkage<-dataset |> 
+  filter(is.na(`VTM Name`)) 
+
+datasetlink3<-nolinkage |>
+  mutate(`VTM Name`=`Drug...2`) |> 
+  mutate(BNF_PARAGRAPH=`Pharmaceutical class`) |> 
+  select(Drug...2, `VTM Name`, `Therapeutic class`, `Pharmaceutical class`) |> 
+  merge(snomed_dmd_bnflink, by= "VTM Name") |> 
+  distinct(Drug...2, `Pharmaceutical class`,.keep_all=T) |> 
+  select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH) |> 
+  mutate(dataset="three")
+```
+
+Bind successfully merged data
+```{r}
+dataset_linked_3<-rbind(datasetlink1, datasetlink2, datasetlink3) #n=887/1181 linked with full info
+```
+
+Check matching on the third dataset:
+```{r}
+dataset_linked_3 |> 
+  filter(dataset=="three") #there are a lot of errors - maybe manually QC this one??
+```
+
+```{r}
+snomed_dmd_bnflink |> 
+  distinct(`VTM Name`, BNF_CHAPTER,BNF_SECTION,.keep_all=T) |> 
+  #select(`VTM Name`,BNF_PRODUCT,BNF_CHAPTER, BNF_SECTION,BNF_PARAGRAPH, BNF_SUBPARAGRAPH) |> 
+  arrange(`VTM Name`) |> 
+  mutate(`Drug...2`=`VTM Name`) |> 
+  #mutate(`Drug...2`=`BNF_SUBPARAGRAPH`)|> 
+  mutate(`Pharmaceutical class`=`BNF_SECTION`) |> 
+  merge(formulary_list, by= c("Drug...2","Pharmaceutical class")) |>   #firstly link on drug and pharmaceutical class for drugs where there is more than one indication
+  select(`VTM Name`, Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
+```
+
+
