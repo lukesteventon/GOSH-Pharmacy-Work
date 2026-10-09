@@ -62,9 +62,13 @@ bnf_codes<-read_csv(
   col_names = TRUE,
   col_types = cols(.default = col_character()),
   col_select = NULL)
+
+bnf_codes |> 
+  arrange(BNF_PARAGRAPH) |> 
+  filter(str_detect(BNF_PRODUCT,"Musculo"))
 ```
 
-Link SNOMED and dm+d together
+Link SNOMED and dm+d together:
 ```{r}
 snomed_mapping_file |> 
   count(VTM) #n=3103 VTMs
@@ -74,21 +78,15 @@ vtm |>
 
 snomed_dmd<-snomed_mapping_file |>  #n=406,290 lines in snomed
   rename(VTMID=VTM) |> #merge on VTM
-merge(vtm, by="VTMID") #n=3253 lines in the vtm dm+d file
+left_join(vtm, by="VTMID") #n=3253 lines in the vtm dm+d file
 
 snomed_mapping_file |> 
-  filter(`VTM Name`=="Acebutolol")
+  filter(`VTM Name`=="Fentanyl")
 
-vtm |> 
-  filter(NM=="Acebutolol")
 
 snomed_dmd |> 
-  filter(NM=="Acebutolol")
-
-snomed_dmd |> 
-  distinct(VTMID,.keep_all=T) #n=3,102 preserved
+  distinct(VTMID,.keep_all=T) #n=3,103 preserved
 ```
-SNOMED and dm+d linked data contains drug name, VTM code and BNF code.
 ```{r}
 snomed_dmd_bnflink<-snomed_dmd |> 
   rename(BNF_PRESENTATION_CODE=`BNF Code`) |> 
@@ -101,47 +99,181 @@ write_csv(snomed_dmd_bnflink, "snomed_bnf_dmd_link.csv")
 ```
 
 
-Join GOSH formulary to dm+d/BNF/SNOMED linked data
+Normalize join keys to lower case before joining - this may help increase linkage
+```{r}
+# Case-insensitive join
+snomed_dmd_bnflink <- snomed_dmd_bnflink %>%
+mutate_all(~ tolower(.))
+
+formulary_list<-formulary_list |> 
+mutate_all(~ tolower(.))
+```
+
+Relink updated database:
+```{r}
+bnfsection_update<-read_csv(
+"pharmaceutical_class_updated.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)|> 
+mutate_all(~ tolower(.)) |> 
+  select(1,4)
+
+bnfsection_update2<-read_csv(
+"therapeutic_class_updated.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)|> 
+mutate_all(~ tolower(.)) |> 
+  select(1,4)
+
+formulary_list<-formulary_list |> 
+  left_join(bnfsection_update, by="Pharmaceutical class") |> 
+  select(`Pharmaceutical class`, `BNF Version`) |> 
+  distinct(`Pharmaceutical class`,.keep_all=T) |> 
+  right_join(formulary_list, by = "Pharmaceutical class") |> 
+  mutate(`Pharmaceutical class`=ifelse(`Pharmaceutical class`!=`BNF Version`&!is.na(`BNF Version`), `BNF Version`, `Pharmaceutical class`)) |> 
+  select(-`BNF Version`) 
+
+formulary_list<-formulary_list |> 
+  left_join(bnfsection_update2, by="Therapeutic class") |> 
+  select(`Therapeutic class`, `BNF_Version`) |> 
+  distinct(`Therapeutic class`,.keep_all=T) |> 
+  right_join(formulary_list, by = "Therapeutic class") |> 
+  mutate(`Therapeutic class`=ifelse(`Therapeutic class`!=`BNF_Version`&!is.na(`BNF_Version`), `BNF_Version`, `Therapeutic class`)) |> 
+  select(-`BNF_Version`)# |> 
+  #filter(str_detect(`Therapeutic class`, "gastro"))
+```
+Join GOSH formulary to dm+d/BNF/SNOMED linked data:
 ```{r}
 dataset<-snomed_dmd_bnflink |> 
-  distinct(`VTM Name`, BNF_CHAPTER,BNF_SECTION,.keep_all=T) |> 
-  select(`VTM Name`,BNF_PRODUCT,BNF_CHAPTER, BNF_SECTION,BNF_PARAGRAPH, BNF_SUBPARAGRAPH) |> 
-  arrange(`VTM Name`) |> 
   mutate(`Drug...2`=`VTM Name`) |> 
-  #mutate(`Drug...2`=`BNF_SUBPARAGRAPH`)|> 
+  distinct(`VTM Name`, BNF_CHAPTER,BNF_SECTION,BNF_PARAGRAPH,BNF_SUBPARAGRAPH,.keep_all = T) |> 
+  select(`VTM Name`,Drug...2,BNF_PRODUCT,BNF_CHAPTER, BNF_SECTION,BNF_PARAGRAPH, BNF_SUBPARAGRAPH) |> 
+  arrange(`VTM Name`) |> 
   mutate(`Pharmaceutical class`=`BNF_SECTION`) |> 
-  right_join(formulary_list, by= c("Drug...2","Pharmaceutical class")) |>   #firstly link on drug and pharmaceutical class for drugs where there is more than one indication
-  select(`VTM Name`, Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
+  mutate(`Therapeutic class`=`BNF_CHAPTER`) |>   
+  right_join(formulary_list, by= c("Drug...2","Pharmaceutical class","Therapeutic class")) |>   #firstly link on drug and pharmaceutical class for drugs where there is more than one indication
+
+  select(`VTM Name`,Drug...1,Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER,`Therapeutic Subclass`, BNF_SUBPARAGRAPH)
 
 datasetlink1<-dataset|> 
   filter(!is.na(BNF_SECTION)) |> 
   mutate(dataset="one")
 
 datasetlink1 |> 
-  filter(!is.na(BNF_SECTION)) #n=349/1181 match on drug and BNF_SECTION
+  filter(!is.na(BNF_SECTION)) #n=608/1181 match exactly on DRUG and BNF_SECTION and BNF_CHAPTER
 
+dataset |> 
+  filter(is.na(BNF_SECTION)) 
+```
+
+Inspect lines that do not link:
+```{r}
+# Pattern to search for
+pattern <- "gastro"
+
+# Detect pattern across ALL columns
+snomed_dmd_bnflink %>%
+  mutate(
+    has_pattern = apply(across(everything(), ~ str_detect(.x, pattern)), 1, any)
+  ) |> 
+  filter(!is.na(has_pattern)) |> 
+   distinct(`VTM Name`, BNF_SECTION, BNF_CHAPTER, BNF_SUBPARAGRAPH) 
+
+
+
+dataset %>%
+  mutate(
+    has_pattern = apply(across(everything(), ~ str_detect(.x, pattern)), 1, any)
+  ) |> 
+  filter(is.na(has_pattern)) |> 
+   distinct(`VTM Name`,Drug...1,`Pharmaceutical class`, BNF_SECTION,`Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH) 
+```
+Pharmaceutical class and therapeutic class (GOSH formulary) are not matched to BNF in many cases
+
+Check for mismatches between BNF Chapter and Pharmaceutical Class
+```{r}
+#Pull list where records don't match up
+#dataset |> 
+#  filter(is.na(BNF_SECTION)) |>  #n=808
+# count(`Pharmaceutical class`, `Therapeutic class`, `Therapeutic Subclass`) |> 
+#  write_csv("pharmaceutical_class.csv")
+#
+#dataset |> 
+#  filter(is.na(BNF_SECTION)) |>  #n=808
+#  count(`Therapeutic class`) |> 
+#  write_csv("therapeutic_class.csv")
+#
+#dataset |> 
+#  filter(is.na(BNF_SECTION)) |>  #n=808
+#  count(`Therapeutic Subclass`) |> 
+#  write_csv("therapeutic_Subclass.csv")
+#
+##Write lists of distinct categories in the SNOMED/BNF/DM+D file:
+#bnf_codes |> 
+#  distinct(BNF_CHAPTER) |> 
+#  write_csv("bnf_chapters.csv")
+#
+#bnf_codes |> 
+#  distinct(BNF_SECTION) |> 
+#  write_csv("bnf_section.csv")
+#
+#bnf_codes |> 
+#  distinct(BNF_PARAGRAPH) |> 
+#  write_csv("bnf_paragraph.csv")
+```
+
+
+
+
+```{r}
 snomed_filtered<-snomed_dmd_bnflink |> 
-    distinct(`VTM Name`,.keep_all=T)
+  distinct(`VTM Name`,`BNF_SECTION`, `BNF_CHAPTER`,.keep_all=T)
 
-
-#Then link on drug only???
+#Then link on drug only??
 datasetlink2<-dataset |> 
   filter(is.na(BNF_SECTION)) |> 
   mutate(`BNF_PRODUCT`=Drug...2) |> 
-  select(`BNF_PRODUCT`, Drug...2, `Pharmaceutical class`, `Therapeutic class`) |> 
-  left_join(snomed_filtered, by = "BNF_PRODUCT") |> 
-  select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH) |> 
-  filter(!is.na(BNF_SECTION)) |> 
+  select(`VTM Name`,`BNF_PRODUCT`, `Pharmaceutical class`, `Therapeutic class`,`Therapeutic Subclass`,Drug...1, Drug...2) |> 
+  mutate(BNF_CHAPTER=`Therapeutic class`) |> 
+  mutate(BNF_SECTION=`Pharmaceutical class`) |> 
+  merge(snomed_filtered, by = c("BNF_PRODUCT",  "BNF_CHAPTER","BNF_SECTION","VTM Name")) |> 
+  select(`VTM Name`,Drug...1,Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER,`Therapeutic Subclass`, BNF_SUBPARAGRAPH) |> 
+  filter(!is.na(BNF_CHAPTER)) |> 
   mutate(dataset="two")
 
-snomed_filtered |> 
-  filter(str_detect(`DM+D: Product Description`,"5-Hydroxytryptophan"))
+snomed_dmd_bnflink |> 
+ filter(str_detect(BNF_PRODUCT,"phosphate")) |> 
+  distinct(`VTM Name`,BNF_PRODUCT, BNF_SECTION, BNF_CHAPTER, BNF_PARAGRAPH, BNF_SUBPARAGRAPH)
 ```
 
 Bind successfully merged data
 ```{r}
-linked_data_complete<-rbind(datasetlink1, datasetlink2) #n=574/1181 linked with full info
+linked_data_complete<-rbind(datasetlink1, datasetlink2)|> 
+  filter(!is.na(`VTM Name`)) #n=574/1181 linked with full info
+
+
+linked_data_complete |> 
+  filter(!is.na(`VTM Name`))
 ```
+
+Join complete data to the formulary to put it back into the excel:
+```{r}
+formulary_list |> 
+  arrange(Drug...1, Drug...2) |> 
+  mutate(row=row_number()) |> 
+  #distinct(Drug...1, Drug...2,`Pharmaceutical class`, `Therapeutic class`, `Therapeutic Subclass`,`Formulation and strength`, .keep_all=T) |> 
+  #left_join(linked_data_complete, by = c("Drug...1", "Drug...2", "Pharmaceutical class", "Therapeutic class", "Therapeutic Subclass",row)) |> 
+  left_join(linked_data_complete, by = c("Drug...1", "Drug...2", "Pharmaceutical class", "Therapeutic class", "Therapeutic Subclass", "row")) |> 
+  #select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
+  write_csv("linked_test.csv") #Writes csv of properly linked data
+
+formulary_list |> 
+  left_join(linked_data_complete, by = c("Drug...1", "Drug...2", "Pharmaceutical class", "Therapeutic class", "Therapeutic Subclass")) |> 
+  distinct(Drug...1, Drug...2,.keep_all=T, `Pharmaceutical class`, `Therapeutic class`, `Therapeutic Subclass`)
+```
+
 
 Investigate those that haven't linked
 ```{r}
@@ -151,16 +283,16 @@ nolinkage<-dataset |>
 datasetlink3<-nolinkage |>
   mutate(`VTM Name`=`Drug...2`) |> 
   mutate(BNF_PARAGRAPH=`Pharmaceutical class`) |> 
-  select(Drug...2, `VTM Name`, `Therapeutic class`, `Pharmaceutical class`) |> 
+  select(`Drug...1`, Drug...2, `VTM Name`, `Therapeutic class`, `Pharmaceutical class`, `Therapeutic Subclass`,row) |> 
   merge(snomed_dmd_bnflink, by= "VTM Name") |> 
   distinct(Drug...2, `Pharmaceutical class`,.keep_all=T) |> 
-  select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH) |> 
+  select(`VTM Name`,Drug...1,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`,`Therapeutic Subclass`, BNF_CHAPTER, BNF_SUBPARAGRAPH,BNF_PRODUCT_CODE, BNF_PRESENTATION, row) |> 
   mutate(dataset="three")
 ```
 
 Bind successfully merged data
 ```{r}
-dataset_linked_3<-rbind(datasetlink1, datasetlink2, datasetlink3) #n=887/1181 linked with full info
+dataset_linked_3<-rbind(datasetlink1, datasetlink2, datasetlink3) #n=887/1181 linked with, dataset three has errors
 ```
 
 Check matching on the third dataset:
@@ -168,17 +300,20 @@ Check matching on the third dataset:
 dataset_linked_3 |> 
   filter(dataset=="three") #there are a lot of errors - maybe manually QC this one??
 ```
-
+Link dataset 3 on multiple identifiers and row to get better quality linkage:
 ```{r}
-snomed_dmd_bnflink |> 
-  distinct(`VTM Name`, BNF_CHAPTER,BNF_SECTION,.keep_all=T) |> 
-  #select(`VTM Name`,BNF_PRODUCT,BNF_CHAPTER, BNF_SECTION,BNF_PARAGRAPH, BNF_SUBPARAGRAPH) |> 
-  arrange(`VTM Name`) |> 
-  mutate(`Drug...2`=`VTM Name`) |> 
-  #mutate(`Drug...2`=`BNF_SUBPARAGRAPH`)|> 
-  mutate(`Pharmaceutical class`=`BNF_SECTION`) |> 
-  merge(formulary_list, by= c("Drug...2","Pharmaceutical class")) |>   #firstly link on drug and pharmaceutical class for drugs where there is more than one indication
-  select(`VTM Name`, Drug...2, BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
-```
+formulary_list |> 
+  arrange(Drug...1, Drug...2) |> 
+  mutate(row=row_number()) |> 
+  #distinct(Drug...1, Drug...2,`Pharmaceutical class`, `Therapeutic class`, `Therapeutic Subclass`,`Formulation and strength`, .keep_all=T) |> 
+  left_join(linked_data_complete, by = c("Drug...1", "Drug...2", "Pharmaceutical class", "Therapeutic class", "Therapeutic Subclass","row")) |> 
+  select(-(`VTM Name`:dataset))  |> 
+  left_join(dataset_linked_3, by = c("Drug...1", "Drug...2", "Pharmaceutical class", "Therapeutic class", "Therapeutic Subclass", "row")) |> 
+  distinct(row,.keep_all=T) |> 
+  #select(`VTM Name`,Drug...2,BNF_PRODUCT, `Pharmaceutical class`, BNF_SECTION, `Therapeutic class`, BNF_CHAPTER, BNF_SUBPARAGRAPH)
+  write_csv("linked_test_expanded.csv") #Writes csv of properly linked data
 
+dataset_linked_3 |> 
+  count(dataset)
+```
 
