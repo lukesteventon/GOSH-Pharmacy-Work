@@ -1,0 +1,172 @@
+---
+title: "Formulary - BNF linkage"
+author: "Luke Steventon"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(broom)
+library(ggplot2)
+library(skimr)
+library(survminer)
+library(survival)
+library(rbin)
+library(readr)
+library(here)
+library(fuzzyjoin)
+knitr::opts_chunk$set(echo = TRUE)
+here()
+#setwd("K:\\QNAP\\BRCT\\SACT project\\LSanalysis\\Rstudio")
+setwd("K://Pharmacy KPI Data//CMP and DTC//CMP work//Busulfan data (Luke)")
+getwd()
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#Read pharmacy files
+levels<-read_csv(
+  "busulfan_v2_levels.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) |> 
+  arrange(MRN, CollectedInstant)
+
+closest_level<-read_csv(
+  "busulfan_v2_doses_with_closest_level.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)|> 
+  arrange(MRN, AdministrationInstant)
+
+closest_antib<-read_csv(
+  "busulfan_v2_doses_with_closest_antib.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)|> 
+  arrange(MRN, AdministrationInstant)
+```
+
+
+
+
+```{r}
+levels_summary<-levels |> 
+  skimr::skim()
+
+levels_summary
+```
+
+```{r}
+closest_level_summary<-closest_level |> 
+  skimr::skim()
+
+closest_level_summary
+closest_antib |> 
+  skimr::skim()
+```
+
+Merge on everything as it matches:
+```{r}
+dataset<-closest_level |> 
+  merge(closest_antib, by = c("MRN", "AdministrationInstant", "MedicationAdministrationKey","PersonHeight_X","PersonWeight_X","PatientDurableKey","MedFullName","ScheduledAdministrationInstant","Frequency","AdministrationRoute","LastName","FirstName","Mode","Dose","DoseUnit","OrderPriority","Department","AdminBy","IsHospitalAdmission","TherapeuticClass","AdministrationAction")) |> 
+  arrange(MRN, CollectedInstant)
+```
+
+```{r}
+dataset_full<- dataset |> 
+ right_join(levels, by= c("MRN", "PatientDurableKey","CollectedInstant" )) 
+```
+
+```{r}
+dataset_full<-dataset_full |> 
+  mutate(CollectedInstant=as_datetime(CollectedInstant)) |> 
+  mutate(ScheduledAdministrationInstant=as_datetime(ScheduledAdministrationInstant)) 
+```
+Plot time series:
+```{r}
+# Install and load ggpubr if not already installed
+# install.packages("ggpubr")
+library(dplyr)
+library(lubridate)  # For time parsing
+library(hms) 
+library(ggpubr)
+Voriconazole<-dataset_full |> 
+  filter(AntiB=="Voriconazole") |> 
+  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
+  mutate(Result.y=as.numeric(Result.y)) |> 
+  arrange(MRN, CollectedInstant) |> 
+  ungroup()
+
+# Scatter plot with date on x-axis
+p <- ggscatter(                                                             
+  Voriconazole,
+  x = "SeqTimeMins",
+  y = "Result.y",
+  color = "blue",          # point color
+  size = 1,                # point size
+  add = "reg.line",            # connect points with a line
+  add.params = list(color = "black", size = 0.1),
+ xlab = "Time from infusion (minutes)",  ylab = "Voriconazole value" 
+) +ylim(c(0,10))+ xlim(0,6000)+
+  theme_minimal()#+        # clean theme
+ 
+#scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
+
+# Print plot
+print(p)
+```
+Plot time series:
+```{r}
+Posaconazole<-dataset_full |> 
+  filter(AntiB=="Posaconazole") |> 
+  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
+  mutate(Result.y=as.numeric(Result.y))
+# Scatter plot with date on x-axis
+pp <- ggscatter(
+  Posaconazole,
+  x = "SeqTimeMins",
+  y = "Result.y",
+  color = "blue",          # point color
+  size = 1,                # point size
+  add = "reg.line",            # connect points with a line
+  add.params = list(color = "black", size = 0.1),
+ xlab = "Time from infusion (minutes)",  ylab = "Posaconazole value"
+)  +ylim(c(0,10))+ xlim(0,6000)+
+  theme_minimal()#+        # clean theme
+ #scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
+
+# Print plot
+print(pp)
+```
+Plot time series:
+```{r}
+Itraconazole<-dataset_full |> 
+  filter(AntiB=="Itraconazole") |> 
+  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
+  mutate(Result.y=as.numeric(Result.y))
+# Scatter plot with date on x-axis
+pi <- ggscatter(
+  Itraconazole,
+  x = "SeqTimeMins",
+  y = "Result.y",
+  color = "blue",          # point color
+  size = 1,                # point size
+  add = "reg.line",            # connect points with a line
+  add.params = list(color = "black", size = 0.1),
+  xlab = "Time from infusion (minutes)",
+  ylab = "Itraconazole level"
+)+ylim(c(0,10))+ xlim(0,6000)+
+  theme_minimal()#+        # clean theme
+ #scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
+
+# Print plot
+print(pi)
+```
