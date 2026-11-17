@@ -17,10 +17,11 @@ library(rbin)
 library(readr)
 library(here)
 library(fuzzyjoin)
+library(lubridate)
 knitr::opts_chunk$set(echo = TRUE)
 here()
 #setwd("K:\\QNAP\\BRCT\\SACT project\\LSanalysis\\Rstudio")
-setwd("K://Pharmacy KPI Data//CMP and DTC//CMP work//Busulfan data (Luke)")
+setwd("C:/Users/stevel5/PycharmProjects/re502_cmp/data/Busulfan 7DEC25 - 09NOV26")
 getwd()
 ```
 
@@ -30,143 +31,150 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r cars}
+```{r}
+setwd("C:/Users/stevel5/PycharmProjects/re502_cmp/data/Busulfan 7DEC25 - 09NOV26")
+getwd()
 #Read pharmacy files
-levels<-read_csv(
-  "busulfan_v2_levels.csv",
+demographics<-read_csv(
+  "demographics.csv",
   col_names = TRUE,
   col_types = cols(.default = col_character()),
-  col_select = NULL) |> 
-  arrange(MRN, CollectedInstant)
+  col_select = NULL) 
 
-closest_level<-read_csv(
-  "busulfan_v2_doses_with_closest_level.csv",
+diagnoses<-read_csv(
+  "diagnoses.csv",
   col_names = TRUE,
   col_types = cols(.default = col_character()),
-  col_select = NULL)|> 
-  arrange(MRN, AdministrationInstant)
+  col_select = NULL) 
 
-closest_antib<-read_csv(
-  "busulfan_v2_doses_with_closest_antib.csv",
+problem_list<-read_csv(
+  "problem_list.csv",
   col_names = TRUE,
   col_types = cols(.default = col_character()),
-  col_select = NULL)|> 
-  arrange(MRN, AdministrationInstant)
+  col_select = NULL) 
+
+flowsheet_rows<-read_csv(
+  "flowsheet_rows.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+procedures<-read_csv(
+  "procedures.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+ward_stays<-read_csv(
+  "ward_stays.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+bed_stays<-read_csv(
+  "bed_stays.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+episodes<-read_csv(
+  "episodes.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+theatre_list<-read_csv(
+  "theatre_list.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+op_activity<-read_csv(
+  "op_activity.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+lab_components<-read_csv(
+  "lab_components.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+medication_admins<-read_csv(
+  "medication_admins.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
 ```
-
-
 
 
 ```{r}
-levels_summary<-levels |> 
-  skimr::skim()
+diagnoses |> 
+  count(project_id) #n=21 patients in the busulfan cohort 07/12/2025 - 09/11/2026
+```
 
-levels_summary
+Count how many received busulfan:
+```{r}
+medication_admins |> 
+  filter(str_detect(drug_name, "BUSULFAN")) |> 
+  count(project_id) #All n=21 received busulfan
+```
+```{r}
+demographics #n=21 
+```
+Build treatment list:
+
+```{r}
+busulfan_tx<-medication_admins |> 
+  filter(str_detect(drug_name, "BUSULFAN"))
+
+cohort<-busulfan_tx |> merge(demographics, by = "project_id")
+```
+
+Link data:
+```{r}
+labs<-lab_components |> 
+   filter(str_detect(component_name,"Busulfan")) |> 
+  mutate(busulfan_admin_time=start_datetime) |> 
+  distinct(project_id, busulfan_admin_time, .keep_all=T)
+
+busulfan_cohort<- cohort |> 
+  merge(labs, by= "project_id") |> 
+  arrange(project_id,busulfan_admin_time) |> 
+  distinct(project_id, busulfan_admin_time, collected_datetime,.keep_all=T)
+
+
+busulfan_cohort |> 
+  count(project_id) #n=18 with labs
 ```
 
 ```{r}
-closest_level_summary<-closest_level |> 
-  skimr::skim()
+height_weight_data<-flowsheet_rows |> 
+  filter(str_detect(type, "HEIGHT_centimetres|WEIGHT/SCALE_grams")) |> 
+  select(project_id, DisplayName, type, Value,start_datetime) |> 
+  mutate(Value=as.numeric(Value)) |> 
+  mutate(start_datetime=as.POSIXct(start_datetime))
 
-closest_level_summary
-closest_antib |> 
-  skimr::skim()
+cohort<-height_weight_data |> 
+  group_by(project_id, DisplayName) |> 
+  mutate(height=ifelse(DisplayName=="Height", mean(Value),NA)) |> 
+  mutate(weight=ifelse(DisplayName=="Weight", mean(Value),NA)) |> 
+  group_by(project_id) |> 
+  fill(height, .direction="updown") |> 
+  fill(weight, .direction="updown") |> 
+  ungroup() |> 
+  distinct(project_id,.keep_all=T) |> 
+  ungroup() |> 
+  right_join(busulfan_cohort, by = "project_id") |> 
+  distinct(project_id, busulfan_admin_time, collected_datetime,.keep_all=T) |> 
+  arrange(project_id, busulfan_admin_time)
+
+cohort |> count(project_id) #n=18
+
+cohort |> select(project_id, birth_date,sex_name,busulfan_admin_time, collected_datetime,TestName,Value.y, height, weight) |> 
+  write_csv("busulfan_2026_data.csv")
+getwd()
 ```
 
-Merge on everything as it matches:
-```{r}
-dataset<-closest_level |> 
-  merge(closest_antib, by = c("MRN", "AdministrationInstant", "MedicationAdministrationKey","PersonHeight_X","PersonWeight_X","PatientDurableKey","MedFullName","ScheduledAdministrationInstant","Frequency","AdministrationRoute","LastName","FirstName","Mode","Dose","DoseUnit","OrderPriority","Department","AdminBy","IsHospitalAdmission","TherapeuticClass","AdministrationAction")) |> 
-  arrange(MRN, CollectedInstant)
-```
-
-```{r}
-dataset_full<- dataset |> 
- right_join(levels, by= c("MRN", "PatientDurableKey","CollectedInstant" )) 
-```
-
-```{r}
-dataset_full<-dataset_full |> 
-  mutate(CollectedInstant=as_datetime(CollectedInstant)) |> 
-  mutate(ScheduledAdministrationInstant=as_datetime(ScheduledAdministrationInstant)) 
-```
-Plot time series:
-```{r}
-# Install and load ggpubr if not already installed
-# install.packages("ggpubr")
-library(dplyr)
-library(lubridate)  # For time parsing
-library(hms) 
-library(ggpubr)
-Voriconazole<-dataset_full |> 
-  filter(AntiB=="Voriconazole") |> 
-  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
-  mutate(Result.y=as.numeric(Result.y)) |> 
-  arrange(MRN, CollectedInstant) |> 
-  ungroup()
-
-# Scatter plot with date on x-axis
-p <- ggscatter(                                                             
-  Voriconazole,
-  x = "SeqTimeMins",
-  y = "Result.y",
-  color = "blue",          # point color
-  size = 1,                # point size
-  add = "reg.line",            # connect points with a line
-  add.params = list(color = "black", size = 0.1),
- xlab = "Time from infusion (minutes)",  ylab = "Voriconazole value" 
-) +ylim(c(0,10))+ xlim(0,6000)+
-  theme_minimal()#+        # clean theme
- 
-#scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
-
-# Print plot
-print(p)
-```
-Plot time series:
-```{r}
-Posaconazole<-dataset_full |> 
-  filter(AntiB=="Posaconazole") |> 
-  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
-  mutate(Result.y=as.numeric(Result.y))
-# Scatter plot with date on x-axis
-pp <- ggscatter(
-  Posaconazole,
-  x = "SeqTimeMins",
-  y = "Result.y",
-  color = "blue",          # point color
-  size = 1,                # point size
-  add = "reg.line",            # connect points with a line
-  add.params = list(color = "black", size = 0.1),
- xlab = "Time from infusion (minutes)",  ylab = "Posaconazole value"
-)  +ylim(c(0,10))+ xlim(0,6000)+
-  theme_minimal()#+        # clean theme
- #scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
-
-# Print plot
-print(pp)
-```
-Plot time series:
-```{r}
-Itraconazole<-dataset_full |> 
-  filter(AntiB=="Itraconazole") |> 
-  mutate(SeqTimeMins=as.numeric(SeqTimeMins)) |> 
-  mutate(Result.y=as.numeric(Result.y))
-# Scatter plot with date on x-axis
-pi <- ggscatter(
-  Itraconazole,
-  x = "SeqTimeMins",
-  y = "Result.y",
-  color = "blue",          # point color
-  size = 1,                # point size
-  add = "reg.line",            # connect points with a line
-  add.params = list(color = "black", size = 0.1),
-  xlab = "Time from infusion (minutes)",
-  ylab = "Itraconazole level"
-)+ylim(c(0,10))+ xlim(0,6000)+
-  theme_minimal()#+        # clean theme
- #scale_x_discrete(breaks = c(60,120,180,240,300,360,420,480,540,600)) # format axis
-
-# Print plot
-print(pi)
-```
