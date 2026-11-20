@@ -1,0 +1,327 @@
+---
+title: "Formulary - BNF linkage"
+author: "Luke Steventon"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(broom)
+library(ggplot2)
+library(skimr)
+library(survminer)
+library(survival)
+library(rbin)
+library(readr)
+library(here)
+library(fuzzyjoin)
+library(lubridate)
+knitr::opts_chunk$set(echo = TRUE)
+here()
+#setwd("K:\\QNAP\\BRCT\\SACT project\\LSanalysis\\Rstudio")
+setwd("C:/Users/stevel5/PycharmProjects/re502_cmp/data/Tacrolimus 01MAY19 - 18NOV2026")
+getwd()
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+setwd("C:/Users/stevel5/PycharmProjects/re502_cmp/data/Tacrolimus 01MAY19 - 18NOV2026")
+getwd()
+#Read pharmacy files
+demographics<-read_csv(
+  "demographics.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+diagnoses<-read_csv(
+  "diagnoses.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+problem_list<-read_csv(
+  "problem_list.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+#flowsheet_rows1<-read_csv(
+#  "flowsheet_rows_01012026-18112026.csv",
+#  col_names = TRUE,
+#  col_types = cols(.default = col_character()),
+#  col_select = NULL) 
+#
+#flowsheet_rows2<-read_csv(
+#  "flowsheet_rows_01012022_31122023.csv",
+#  col_names = TRUE,
+#  col_types = cols(.default = col_character()),
+#  col_select = NULL) 
+#
+#flowsheet_rows3<-read_csv(
+#  "flowsheet_rows_01012024_31122025.csv",
+#  col_names = TRUE,
+#  col_types = cols(.default = col_character()),
+#  col_select = NULL) 
+#
+#flowsheet_rows4<-read_csv(
+#  "flowsheet_rows_01052019_31122021.csv",
+#  col_names = TRUE,
+#  col_types = cols(.default = col_character()),
+#  col_select = NULL) 
+
+procedures<-read_csv(
+  "procedures.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+ward_stays<-read_csv(
+  "ward_stays.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+bed_stays<-read_csv(
+  "bed_stays.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL) 
+
+episodes<-read_csv(
+  "episodes.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+theatre_list<-read_csv(
+  "theatre_list.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+op_activity<-read_csv(
+  "op_activity.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+lab_components<-read_csv(
+  "lab_components.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+medication_admins<-read_csv(
+  "medication_admins.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+admissions<-read_csv(
+  "hospital_admissions.csv",
+  col_names = TRUE,
+  col_types = cols(.default = col_character()),
+  col_select = NULL)
+
+```
+Format birth date
+```{r}
+demographics <- demographics %>% 
+  mutate(birth_date = as.Date(birth_date))
+```
+
+Admissions
+
+```{r}
+admissions %>% #n=21,173
+  names()
+
+admissions %>% 
+  distinct(project_id) #n=775
+
+# remove unnecessary variables
+
+admissions <- admissions %>% 
+  select(-c(dre_data_source, service_area, admission_source_local_code, expected_discharge_datetime, contains("local_code") ))
+
+```
+
+Clean admission type
+```{r}
+admissions %>% 
+  count(admission_type_local_desc)
+
+admissions %>% 
+  count(project_id) #n=775
+
+admissions <- admissions %>% 
+  mutate(admission_type_local_desc = if_else(
+    grepl("Elective", admission_type_local_desc, ignore.case = T), "Planned", if_else(
+      is.na(admission_type_local_desc), NA, "Unplanned")
+    ))
+```
+
+Clean `discharge destination`
+```{r}
+admissions %>% 
+  count(discharge_destination_local_desc)
+
+admissions <- admissions %>% 
+    mutate(discharge_destination_local_desc = if_else(
+    discharge_destination_local_desc == "Patient Died", "Died", if_else(
+      is.na(discharge_destination_local_desc), NA, "Discharged")
+    )) 
+```
+
+Keep only those with `principal problem` kidney tx, AKI, 
+
+```{r}
+admissions |> 
+  count(project_id) #n=775
+
+admissions <- admissions %>%
+  #filter(grepl("Nephrology", hospital_service, ignore.case = T)) %>% #14,776
+  filter(grepl("renal transplant|kidney transplant", principal_problem, ignore.case = T)) 
+
+admissions |> 
+  count(project_id) #n=169
+```
+
+
+
+
+```{r}
+diagnoses |> #1,248,489
+  count(project_id) #n=775 patients in the tacrolimus cohort 01/05/2019 - 18/11/2026
+
+diagnoses %>% 
+  filter(diag_local_code !=diag_nat_code)
+
+diagnoses %>% count(diag_supl_name)
+
+diagnoses %>% count(diag_name)
+
+#remove adrenal gland diagnosis
+diagnoses <- diagnoses %>%  
+  filter(!grepl("adrenal", diag_name, ignore.case = T))
+
+#remove dialysis
+diagnoses <- diagnoses %>%  
+  filter(!grepl("dialysis", diag_name, ignore.case = T))
+
+#remove Chronic kidney disease
+diagnoses <- diagnoses %>%  
+  filter(!grepl("Chronic kidney disease", diag_name, ignore.case = T))
+
+#remove anythin containing ureter
+diagnoses <- diagnoses %>%  
+  filter(!grepl("ureter", diag_name, ignore.case = T))
+
+#remove anything containing Calculus, cyct, Hypertens*, neoplasm, malformation, tubul*, agenesis, hypoplasia,
+#dysplasia, osteodystrophy, Small, colic, diabetes, contracted
+
+diagnoses <- diagnoses %>%  
+  filter(!grepl("Calculus|Hypertens*|neoplasm|malformation|tubul*|agenesis|hypoplasia|dysplasia|osteodystrophy|Small|colic|diabetes|contracted|Accessory|absence|renal artery|cyst|Ectopic|Embolism|maternal|Hepatorenal|Hyperplastic|Ischaemia|horseshoe|abscess|Small kidney|osteodystrophy|Injury of kidney:", diag_name, ignore.case = T))
+
+
+diagnoses <- diagnoses %>% 
+  select(-c(dre_data_source, diag_local_code, diag_supl_local_code, diag_supl_name, contains("epic")))
+
+diagnoses |> 
+  count(project_id) #n=775
+```
+
+Count how many have a kidney transplant listed:
+Check this in procedures (this dataset contains procedures that definitely happened)
+Check theatre list (this contains all procedures whether they were cancelled or not performed for some other reason)
+```{r}
+procedures |> 
+  count(project_id)
+
+transplants<-procedures |> 
+  filter(str_detect(proc_name, "Kidney|KIDNEY|kidney|renal|Renal|RENAL")) |> 
+  filter(str_detect(proc_name, "Transplant|transplant|TRANSPLANT")) |> #count(proc_local_code) |> arrange(desc(n))
+  filter(str_detect(proc_nat_code, "M01")) |> 
+  filter(str_detect(epic_procedure_source_code, "Billing")) |> #count(proc_local_code) |> arrange(desc(n))
+  group_by(project_id) |> 
+  arrange(project_id, start_datetime) 
+
+#Need to consider the index date for kidney transplant as there are multiple lines per patient. Listed as billing, surgical procedure, general procedure etc.
+transplants|> 
+  count(project_id) #n=187/778 with kidney transplant listed in procedures
+
+transplants|> 
+  arrange(project_id)
+
+theatre_list |> 
+  count(project_id) #n=599 in theatre list total
+
+
+theatre_procedures <-theatre_list |> 
+  filter(procedure_not_performed=="0") |> 
+  filter(procedure_cancelled=="0") |> 
+  filter(str_detect(procedure_code, "M01")) |> 
+  filter(!is.na(in_room_datetime))
+
+theatre_procedures |> 
+  count(project_id) #n=188
+
+
+theatre_procedures |> group_by(project_id) |> 
+  mutate(sum=sum(row_number())) |> 
+  filter(sum>1) |> #n=10 patients have two listings, this is often due to change in status of donor from live to cadaver heart beating. Retain the last record only in these cases as time of transplant. No instances where the dates do not match therefore doesn't suggest second transplants occurred.
+  merge(theatre_procedures, by = "project_id") |> 
+  arrange(project_id, desc(start_datetime))
+
+
+theatre_procedures<-theatre_procedures |> 
+  arrange(project_id, desc(start_datetime)) |> 
+  distinct(project_id,.keep_all=T)
+```
+Merge surgery details to dataset
+```{r}
+cohort<-theatre_procedures |> 
+  merge(demographics, by = "project_id")
+```
+
+Isolate tacrolimus admins and list chronologically
+```{r}
+tacrolimus<-medication_admins |> 
+  filter(str_detect(drug_name, "TACROLIMUS")) |> 
+  filter(!str_detect(drug_name, "OINTMENT"))
+
+cohort_with_meds<-cohort |> merge(tacrolimus, by = "project_id") |>
+  mutate(start_datetime.y=as_datetime(start_datetime.y)) |> 
+  arrange(project_id,start_datetime.y)
+```
+
+Compare transplant time and initiation of treatment
+```{r}
+cohort_with_meds<-cohort_with_meds |> 
+  group_by(project_id) |> 
+  mutate(transplant_time=as_datetime(start_datetime.x)) |> 
+  mutate(tacrolimus_index_time=min(as_datetime(start_datetime.y))) |>
+  ungroup() |> 
+  mutate(tacrolimus_admin_time=as_datetime(start_datetime.y)) |> 
+  mutate(prn_dose=as.numeric(str_replace(prn_dose," mg",""))) |> 
+  rename(prn_dose_mg=prn_dose) |> 
+  select(project_id,birth_date,sex_name, transplant_time, procedure_name, tacrolimus_index_time,tacrolimus_admin_time,prn_dose_mg,drug_name,intended_frequency)
+```
+
+Calculate time between tacrolimus treatments
+```{r}
+cohort_with_meds |> 
+  group_by(project_id) |> 
+  arrange(project_id, tacrolimus_admin_time) |> 
+  distinct(project_id, tacrolimus_admin_time,.keep_all=T) |> 
+  mutate(time_between_tx=difftime(tacrolimus_admin_time, lag(tacrolimus_admin_time), units = "mins"))
+```
+
