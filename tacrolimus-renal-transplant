@@ -309,7 +309,7 @@ cohort_with_meds<-cohort_with_meds |>
   group_by(project_id) |> 
   mutate(transplant_time=as_datetime(start_datetime.x)) |> 
   mutate(tacrolimus_index_time=min(as_datetime(start_datetime.y))) |>
-  ungroup() |> 
+  ungroup() |>  
   mutate(tacrolimus_admin_time=as_datetime(start_datetime.y)) |> 
   mutate(prn_dose=as.numeric(str_replace(prn_dose," mg",""))) |> 
   rename(prn_dose_mg=prn_dose) |> 
@@ -318,10 +318,105 @@ cohort_with_meds<-cohort_with_meds |>
 
 Calculate time between tacrolimus treatments
 ```{r}
-cohort_with_meds |> 
+cohort_with_meds<-cohort_with_meds |> 
   group_by(project_id) |> 
   arrange(project_id, tacrolimus_admin_time) |> 
   distinct(project_id, tacrolimus_admin_time,.keep_all=T) |> 
-  mutate(time_between_tx=difftime(tacrolimus_admin_time, lag(tacrolimus_admin_time), units = "mins"))
+  mutate(time_between_tx=difftime(tacrolimus_admin_time, lag(tacrolimus_admin_time), units = "mins")) |> 
+  ungroup()
 ```
+
+Link tacrolimus blood measurements
+```{r}
+labs_clean<-lab_components |> 
+  filter(str_detect(TestName, "Tacrolimus Level")) |> 
+  filter(Unit=="microg/L") |> 
+  arrange(project_id,collected_datetime) |> 
+  select(project_id,collected_datetime, TestName, Value, Unit, reference_range) |> 
+  mutate(collected_datetime=as_datetime(collected_datetime)) |> 
+  group_by(project_id) |> 
+  mutate(time_between_readings=difftime(collected_datetime, lag (collected_datetime), units = "mins")) |> 
+  mutate(timefromindex=difftime(collected_datetime, min(collected_datetime), units = "hours"))
+
+lab_components |> 
+  filter(str_detect(TestName, "Tacrolimus|tacrol")) |> 
+  count(TestName)
+```
+
+```{r}
+plot<-labs_clean |> 
+  merge(cohort_with_meds, by = "project_id") |> 
+  select(project_id,tacrolimus_admin_time,prn_dose_mg,collected_datetime, Value, reference_range ) |> 
+  arrange(project_id, desc(tacrolimus_admin_time),collected_datetime) |> 
+  mutate(timediff=difftime(collected_datetime,tacrolimus_admin_time, units = "mins")) |> 
+  group_by(project_id, tacrolimus_admin_time) |> 
+  filter(timediff>0) |> 
+  arrange(project_id, collected_datetime, timediff) |> 
+  distinct(project_id, tacrolimus_admin_time,collected_datetime,timediff,.keep_all=T) |> 
+  ungroup() |> 
+  mutate(time_since_last_dose=as.numeric(difftime(collected_datetime, tacrolimus_admin_time, units = "hours"))) |> 
+  mutate(Value=as.numeric(Value)) |> 
+  arrange(project_id, collected_datetime, time_since_last_dose) |> 
+  distinct(project_id, tacrolimus_admin_time,.keep_all=T) |> 
+  mutate(restriction=ifelse(time_since_last_dose>168,1,NA)) |> 
+  arrange(project_id, collected_datetime) |> 
+  group_by(project_id) |> 
+  #fill(restriction,.direction = "updown") |> 
+  filter(is.na(restriction)) |> 
+  ungroup()
+
+plot |> 
+  count(project_id)#n=88
+```
+
+Test plot of tacrolimus levels over time
+```{r}
+library(ggplot2)
+ggplot(data=plot, aes(x=time_since_last_dose, y=Value))+ #the 'col=ID' ensures we give separate colour and line for each individual
+  #geom_line()+ # plots a line
+  geom_point()+ # plots the observations as datapoints
+  xlab("Time since last dose (hours)")+ # adds x axis label
+  ylab("Tacrolimus concentration (mg/L)")+ geom_smooth(method = "lm", se = FALSE, color = "blue")
+```
+Flag treatments that drop under minimum dose range:
+```{r}
+levels<-plot |> 
+  distinct(project_id, collected_datetime, Value,.keep_all=T) |> 
+  filter(!is.na(Value)) |> 
+  group_by(project_id) |> 
+  mutate(average_level=mean(Value)) |> 
+  mutate(below_range=ifelse(Value<5,1,0)) |> 
+  mutate(range_average=mean(below_range))
+
+levels |> 
+  filter(range_average>0.5) |> 
+  count(project_id) #n=7/188 were under range more often than above minimum
+
+levels |> 
+  filter(average_level<5) |> 
+  count(project_id)
+```
+
+Identify patients who had a transplant rejection:
+```{r}
+plot<-diagnoses |> 
+  filter(str_detect(diag_name, "Kidney transplant failure and rejection")) |> 
+  select(project_id, diag_name, start_datetime) |> 
+  distinct(project_id,.keep_all=T) |> 
+  right_join(plot, by= "project_id") |> 
+  mutate(rejection=ifelse(!is.na(diag_name.x),1,0)) |> 
+  group_by(project_id) |> 
+  fill(rejection,.direction="updown") |> 
+  ungroup()
+
+
+plot |> 
+  distinct(project_id,.keep_all=T) |> 
+  count(rejection) #n=55/133 had a rejection
+
+plot |> 
+  distinct(project_id,.keep_all=T) |> 
+  count(rejection, below_range)
+```
+
 
