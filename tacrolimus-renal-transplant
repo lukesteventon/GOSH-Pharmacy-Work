@@ -279,7 +279,7 @@ theatre_procedures |> group_by(project_id) |>
   mutate(sum=sum(row_number())) |> 
   filter(sum>1) |> #n=10 patients have two listings, this is often due to change in status of donor from live to cadaver heart beating. Retain the last record only in these cases as time of transplant. No instances where the dates do not match therefore doesn't suggest second transplants occurred.
   merge(theatre_procedures, by = "project_id") |> 
-  arrange(project_id, desc(start_datetime))
+  arrange(project_id, desc(start_datetime.x))
 
 
 theatre_procedures<-theatre_procedures |> 
@@ -321,10 +321,20 @@ Calculate time between tacrolimus treatments
 cohort_with_meds<-cohort_with_meds |> 
   group_by(project_id) |> 
   arrange(project_id, tacrolimus_admin_time) |> 
+   #mutate(tacrolimus_admin_time=as_datetime(start_datetime.y)) |> 
   distinct(project_id, tacrolimus_admin_time,.keep_all=T) |> 
   mutate(time_between_tx=difftime(tacrolimus_admin_time, lag(tacrolimus_admin_time), units = "mins")) |> 
   ungroup()
 ```
+
+Mutate time at transplant
+```{r}
+cohort_with_meds<-cohort_with_meds |> 
+  group_by(project_id) |> 
+  mutate(age_at_transplant=as.numeric(difftime(transplant_time, birth_date, units = "days"))/365) |> 
+  select(project_id, birth_date, transplant_time, age_at_transplant, tacrolimus_admin_time, prn_dose_mg)
+```
+
 
 Link tacrolimus blood measurements
 ```{r}
@@ -346,7 +356,7 @@ lab_components |>
 ```{r}
 plot<-labs_clean |> 
   merge(cohort_with_meds, by = "project_id") |> 
-  select(project_id,tacrolimus_admin_time,prn_dose_mg,collected_datetime, Value, reference_range ) |> 
+  select(project_id,tacrolimus_admin_time,prn_dose_mg,collected_datetime, Value, reference_range,age_at_transplant, prn_dose_mg ) |> 
   arrange(project_id, desc(tacrolimus_admin_time),collected_datetime) |> 
   mutate(timediff=difftime(collected_datetime,tacrolimus_admin_time, units = "mins")) |> 
   group_by(project_id, tacrolimus_admin_time) |> 
@@ -366,7 +376,7 @@ plot<-labs_clean |>
   ungroup()
 
 plot |> 
-  count(project_id)#n=88
+  count(project_id)#n=188
 ```
 
 Test plot of tacrolimus levels over time
@@ -397,26 +407,39 @@ levels |>
   count(project_id)
 ```
 
+
 Identify patients who had a transplant rejection:
 ```{r}
+library(tableone)
+library(gtsummary)
+library(broom.helpers)
 plot<-diagnoses |> 
   filter(str_detect(diag_name, "Kidney transplant failure and rejection")) |> 
-  select(project_id, diag_name, start_datetime) |> 
+  #select(project_id, diag_name, start_datetime) |> 
   distinct(project_id,.keep_all=T) |> 
   right_join(plot, by= "project_id") |> 
-  mutate(rejection=ifelse(!is.na(diag_name.x),1,0)) |> 
+  mutate(rejection=ifelse(!is.na(diag_name),1,0)) |> 
   group_by(project_id) |> 
-  fill(rejection,.direction="updown") |> 
+  fill(rejection,.direction="updown") |>
+  filter(!is.na(Value)) |> 
+  mutate(average_level=mean(Value)) |> 
+  mutate(below_range=ifelse(Value<5,1,0)) |> 
+  mutate(range_average=mean(below_range)) |> 
   ungroup()
+  
 
-
+plot<-plot |> 
+  merge(demographics, by = "project_id")
 plot |> 
   distinct(project_id,.keep_all=T) |> 
   count(rejection) #n=55/133 had a rejection
 
-plot |> 
-  distinct(project_id,.keep_all=T) |> 
-  count(rejection, below_range)
+regression_data<-plot |> 
+  distinct(project_id,.keep_all=T)
+
+model<-glm(rejection~average_level+ sex_name+ethnicity_name+religion_name+age_at_transplant, data=regression_data)
+
+tbl_regression(model, exponentiate = TRUE)
 ```
 
 
